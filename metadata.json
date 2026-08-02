@@ -1,0 +1,10 @@
+{
+  "description": "Deep Sea Descent - An atmospheric deep-sea submarine survival game of exploration, upgrades, and deep ocean hazards.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "name": "Deep Sea Descent",
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
