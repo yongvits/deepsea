@@ -73,6 +73,16 @@ interface LeaderboardEntry {
   subColorIndex: number;
 }
 
+interface HistoryEntry {
+  id: string;
+  playerName: string;
+  depth: number;
+  coinsGained: number;
+  reason: string;
+  date: string;
+  time: string;
+}
+
 interface GameState {
   playerName: string;
   coins: number;
@@ -83,37 +93,40 @@ interface GameState {
 }
 
 const DEFAULT_LEADERBOARD: LeaderboardEntry[] = [
-  { id: '1', playerName: 'กัปตันมารีน', depth: 3250, coinsGained: 450, date: '2026-08-01', subColorIndex: 1 },
-  { id: '2', playerName: 'นักดิ่งนีออน', depth: 2100, coinsGained: 280, date: '2026-08-01', subColorIndex: 0 },
-  { id: '3', playerName: 'ผู้พิชิตเหวลึก', depth: 1450, coinsGained: 190, date: '2026-08-02', subColorIndex: 3 },
-  { id: '4', playerName: 'กัปตันสายหมอก', depth: 980, coinsGained: 120, date: '2026-08-02', subColorIndex: 2 }
+  { id: '1', playerName: 'กัปตันมารีน', depth: 3250, coinsGained: 450, date: '2 ส.ค.', subColorIndex: 1 },
+  { id: '2', playerName: 'นักดิ่งนีออน', depth: 2840, coinsGained: 380, date: '2 ส.ค.', subColorIndex: 0 },
+  { id: '3', playerName: 'กัปตันอันดามัน', depth: 2100, coinsGained: 290, date: '1 ส.ค.', subColorIndex: 4 },
+  { id: '4', playerName: 'ผู้พิชิตเหวลึก', depth: 1650, coinsGained: 210, date: '1 ส.ค.', subColorIndex: 3 },
+  { id: '5', playerName: 'กัปตันสายหมอก', depth: 1280, coinsGained: 160, date: '1 ส.ค.', subColorIndex: 2 },
+  { id: '6', playerName: 'นักสำรวจอ่าวไทย', depth: 950, coinsGained: 110, date: '31 ก.ค.', subColorIndex: 0 },
+  { id: '7', playerName: 'กัปตันสมอเรือ', depth: 620, coinsGained: 80, date: '31 ก.ค.', subColorIndex: 1 }
 ];
 
 const UPGRADES_CONF = {
   hull: {
     maxLevel: 5,
-    costMultiplier: 100,
-    values: [120, 160, 220, 300, 400]
+    costMultiplier: 80,
+    values: [150, 200, 280, 380, 500]
   },
   engine: {
     maxLevel: 5,
-    costMultiplier: 90,
-    values: [0.18, 0.22, 0.26, 0.31, 0.38] 
+    costMultiplier: 70,
+    values: [0.22, 0.28, 0.35, 0.42, 0.50] 
   },
   oxygen: {
     maxLevel: 5,
-    costMultiplier: 100,
-    values: [0.045, 0.035, 0.025, 0.018, 0.012] 
+    costMultiplier: 70,
+    values: [0.015, 0.011, 0.008, 0.005, 0.002] 
   },
   light: {
     maxLevel: 5,
-    costMultiplier: 80,
+    costMultiplier: 60,
     values: [
-      { length: 220, width: 55 },
-      { length: 260, width: 65 },
-      { length: 300, width: 75 },
-      { length: 350, width: 90 },
-      { length: 420, width: 110 }
+      { length: 240, width: 60 },
+      { length: 280, width: 70 },
+      { length: 320, width: 80 },
+      { length: 380, width: 95 },
+      { length: 450, width: 120 }
     ]
   }
 };
@@ -124,7 +137,7 @@ const UPGRADES_CONF = {
 class RetroAudioController {
   public ctx: AudioContext | null = null;
   public enabled: boolean = true;
-  private activeCount: number = 0;
+  private activeOscillators: Set<OscillatorNode> = new Set();
   private lastSonarTime: number = 0;
   private lastSoundTimes: Record<string, number> = {};
 
@@ -146,15 +159,21 @@ class RetroAudioController {
   }
 
   stopAll() {
-    this.activeCount = 0;
+    this.activeOscillators.forEach(osc => {
+      try {
+        osc.stop();
+        osc.disconnect();
+      } catch (e) {}
+    });
+    this.activeOscillators.clear();
   }
 
-  playTone(freqStart: number, freqEnd: number, duration: number, type: OscillatorType = 'sine', volume: number = 0.1, soundKey?: string) {
+  playTone(freqStart: number, freqEnd: number, duration: number, type: OscillatorType = 'sine', volume: number = 0.08, soundKey?: string) {
     if (!this.enabled) return;
 
     const now = performance.now();
     if (soundKey) {
-      if (this.lastSoundTimes[soundKey] && now - this.lastSoundTimes[soundKey] < 80) {
+      if (this.lastSoundTimes[soundKey] && now - this.lastSoundTimes[soundKey] < 120) {
         return;
       }
       this.lastSoundTimes[soundKey] = now;
@@ -163,12 +182,12 @@ class RetroAudioController {
     this.resumeContext();
     if (!this.ctx || this.ctx.state === 'closed') return;
 
-    if (this.activeCount >= 5) return; // Cap simultaneous synth sounds to prevent audio thread crashes
+    if (this.activeOscillators.size >= 4) return;
 
-    const safeStart = isNaN(freqStart) ? 440 : Math.max(20, Math.min(freqStart, 20000));
-    const safeEnd = isNaN(freqEnd) ? 440 : Math.max(20, Math.min(freqEnd, 20000));
-    const safeDur = isNaN(duration) ? 0.1 : Math.max(0.01, Math.min(duration, 1.2));
-    const safeVol = isNaN(volume) ? 0.08 : Math.max(0.0, Math.min(volume, 0.4));
+    const safeStart = isNaN(freqStart) ? 440 : Math.max(30, Math.min(freqStart, 8000));
+    const safeEnd = isNaN(freqEnd) ? 440 : Math.max(30, Math.min(freqEnd, 8000));
+    const safeDur = isNaN(duration) ? 0.1 : Math.max(0.01, Math.min(duration, 0.8));
+    const safeVol = isNaN(volume) ? 0.05 : Math.max(0.0, Math.min(volume, 0.2));
 
     try {
       const audioNow = this.ctx.currentTime;
@@ -183,17 +202,15 @@ class RetroAudioController {
 
       gainNode.gain.setValueAtTime(0, audioNow);
       gainNode.gain.linearRampToValueAtTime(safeVol, audioNow + 0.01);
-      gainNode.gain.exponentialRampToValueAtTime(0.001, audioNow + safeDur);
+      gainNode.gain.exponentialRampToValueAtTime(0.0001, audioNow + safeDur);
 
       osc.connect(gainNode);
       gainNode.connect(this.ctx.destination);
 
-      this.activeCount++;
-      let cleaned = false;
+      this.activeOscillators.add(osc);
+
       const cleanup = () => {
-        if (cleaned) return;
-        cleaned = true;
-        this.activeCount = Math.max(0, this.activeCount - 1);
+        this.activeOscillators.delete(osc);
         try {
           gainNode.disconnect();
           osc.disconnect();
@@ -204,41 +221,40 @@ class RetroAudioController {
       osc.start(audioNow);
       osc.stop(audioNow + safeDur);
 
-      setTimeout(cleanup, safeDur * 1000 + 50);
+      setTimeout(cleanup, safeDur * 1000 + 40);
     } catch (err) {
       console.warn("Audio playback failover:", err);
     }
   }
 
   playCoin() {
-    this.playTone(587.33, 880, 0.18, 'sine', 0.08, 'coin');
+    this.playTone(587.33, 880, 0.15, 'sine', 0.06, 'coin');
   }
 
   playPowerup() {
-    this.playTone(330, 990, 0.35, 'triangle', 0.1, 'powerup');
+    this.playTone(330, 880, 0.25, 'triangle', 0.08, 'powerup');
   }
 
   playHit() {
-    this.playTone(180, 60, 0.22, 'sawtooth', 0.15, 'hit');
+    this.playTone(160, 50, 0.15, 'triangle', 0.08, 'hit');
   }
 
   playExplosion() {
-    this.playTone(110, 5, 0.45, 'sawtooth', 0.2, 'explosion');
+    this.playTone(100, 20, 0.3, 'triangle', 0.1, 'explosion');
   }
 
   playGameOver() {
-    this.playTone(220, 55, 0.8, 'sawtooth', 0.15, 'gameover');
+    this.playTone(220, 55, 0.6, 'sine', 0.1, 'gameover');
   }
 
   playSonarWarning(isExtremelyUrgent = false) {
     const now = performance.now();
-    const cooldown = isExtremelyUrgent ? 250 : 500;
+    const cooldown = isExtremelyUrgent ? 1200 : 2000;
     if (now - this.lastSonarTime < cooldown) return;
     this.lastSonarTime = now;
 
-    const pitch = isExtremelyUrgent ? 1100 : 880;
-    const len = isExtremelyUrgent ? 0.08 : 0.12;
-    this.playTone(pitch, pitch, len, 'sine', 0.12, 'sonar');
+    const pitch = isExtremelyUrgent ? 880 : 660;
+    this.playTone(pitch, pitch, 0.1, 'sine', 0.05, 'sonar');
   }
 }
 
@@ -285,7 +301,7 @@ function App() {
 
   // Global Leaderboard State
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>(() => {
-    const saved = localStorage.getItem('deep_sea_leaderboard_v1');
+    const saved = localStorage.getItem('deep_sea_leaderboard_v2');
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
@@ -295,11 +311,30 @@ function App() {
     return DEFAULT_LEADERBOARD;
   });
 
+  const [historyLogs, setHistoryLogs] = useState<HistoryEntry[]>(() => {
+    const saved = localStorage.getItem('deep_sea_history_v1');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      } catch (e) {}
+    }
+    return [
+      { id: 'h1', playerName: 'กัปตันสมอ', depth: 1250, coinsGained: 180, reason: 'ออกซิเจนหมด', date: '2 ส.ค.', time: '14:20' },
+      { id: 'h2', playerName: 'กัปตันสมอ', depth: 680, coinsGained: 90, reason: 'เรือชนสิ่งกีดขวาง', date: '1 ส.ค.', time: '18:45' }
+    ];
+  });
+
   const [showLeaderboard, setShowLeaderboard] = useState<boolean>(false);
+  const [leaderboardTab, setLeaderboardTab] = useState<'rankings' | 'history'>('rankings');
 
   useEffect(() => {
-    localStorage.setItem('deep_sea_leaderboard_v1', JSON.stringify(leaderboard));
+    localStorage.setItem('deep_sea_leaderboard_v2', JSON.stringify(leaderboard));
   }, [leaderboard]);
+
+  useEffect(() => {
+    localStorage.setItem('deep_sea_history_v1', JSON.stringify(historyLogs));
+  }, [historyLogs]);
 
   // Soundtrack control
   const [soundOn, setSoundOn] = useState(true);
@@ -1230,7 +1265,10 @@ function App() {
       });
 
       if (totalMeters > 0) {
-        const todayStr = new Date().toLocaleDateString('th-TH', { day: 'numeric', month: 'short' });
+        const nowObj = new Date();
+        const todayStr = nowObj.toLocaleDateString('th-TH', { day: 'numeric', month: 'short' });
+        const timeStr = nowObj.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+
         const newEntry: LeaderboardEntry = {
           id: Date.now().toString(),
           playerName: stateRef.current.playerName || 'กัปตันสมอ',
@@ -1243,8 +1281,20 @@ function App() {
         setLeaderboard(prev => {
           const combined = [...prev, newEntry];
           combined.sort((a, b) => b.depth - a.depth);
-          return combined.slice(0, 10);
+          return combined.slice(0, 15);
         });
+
+        const historyItem: HistoryEntry = {
+          id: Date.now().toString(),
+          playerName: stateRef.current.playerName || 'กัปตันสมอ',
+          depth: totalMeters,
+          coinsGained: salvageGold,
+          reason: reason === 'oxygen' ? 'ออกซิเจนหมด' : 'เรือชนสิ่งกีดขวาง',
+          date: todayStr,
+          time: timeStr
+        };
+
+        setHistoryLogs(prev => [historyItem, ...prev].slice(0, 25));
       }
 
       setScreen('gameover');
@@ -2533,73 +2583,141 @@ function App() {
             </div>
           )}
 
-          {/* ==================== LEADERBOARD MODAL ==================== */}
+          {/* ==================== LEADERBOARD & HISTORY MODAL ==================== */}
           {showLeaderboard && (
-            <div className="absolute inset-0 bg-black/90 backdrop-blur-md flex flex-col justify-between p-5 z-55 transition-all duration-300">
-              <div className="flex justify-between items-center border-b border-slate-800 pb-3">
-                <h2 className="text-base font-bold text-yellow-400 flex items-center gap-2">
-                  <span>🏆</span> ลำดับความลึกที่เล่นได้ไกลที่สุด
-                </h2>
-                <button 
-                  onClick={() => setShowLeaderboard(false)}
-                  className="text-slate-400 hover:text-white text-lg font-bold px-2 py-0.5 rounded cursor-pointer"
-                >
-                  ✕
-                </button>
+            <div className="absolute inset-0 bg-black/92 backdrop-blur-md flex flex-col justify-between p-4 z-55 transition-all duration-300">
+              <div className="space-y-2 border-b border-slate-800 pb-2.5">
+                <div className="flex justify-between items-center">
+                  <h2 className="text-sm font-bold text-yellow-400 flex items-center gap-1.5">
+                    <span>🏆</span> ลำดับความลึก & ประวัติบันทึก
+                  </h2>
+                  <button 
+                    onClick={() => setShowLeaderboard(false)}
+                    className="text-slate-400 hover:text-white text-lg font-bold px-2 py-0.5 rounded cursor-pointer"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                {/* Tabs Switcher */}
+                <div className="grid grid-cols-2 gap-2 bg-slate-950 p-1 rounded-xl border border-slate-800">
+                  <button 
+                    onClick={() => setLeaderboardTab('rankings')}
+                    className={`py-1.5 rounded-lg text-xs font-bold transition cursor-pointer flex items-center justify-center gap-1 ${leaderboardTab === 'rankings' ? 'bg-cyan-500 text-slate-950 shadow' : 'text-slate-400 hover:text-white'}`}
+                  >
+                    <span>🏆</span> อันดับความลึกสูงสุด
+                  </button>
+                  <button 
+                    onClick={() => setLeaderboardTab('history')}
+                    className={`py-1.5 rounded-lg text-xs font-bold transition cursor-pointer flex items-center justify-center gap-1 ${leaderboardTab === 'history' ? 'bg-cyan-500 text-slate-950 shadow' : 'text-slate-400 hover:text-white'}`}
+                  >
+                    <span>📜</span> บันทึกย้อนหลัง ({historyLogs.length})
+                  </button>
+                </div>
               </div>
 
-              <div className="flex-1 my-3 overflow-y-auto space-y-2 pr-1 custom-scroll">
-                {leaderboard.map((entry, index) => {
-                  const badge = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `#${index + 1}`;
-                  const isCurrentPlayer = entry.playerName === gameState.playerName;
-                  const subColor = COLOR_OPTIONS[entry.subColorIndex || 0] || COLOR_OPTIONS[0];
+              {/* Player Name Tag in Modal */}
+              <div className="bg-slate-900/90 px-3 py-1.5 rounded-lg border border-slate-800 flex items-center justify-between text-xs my-2">
+                <span className="text-slate-400 text-[10px]">กัปตันของคุณ:</span>
+                <span className="font-extrabold text-cyan-300">{gameState.playerName}</span>
+              </div>
 
-                  return (
-                    <div 
-                      key={entry.id || index}
-                      className={`p-3 rounded-xl border flex items-center justify-between gap-2 shadow-sm transition ${isCurrentPlayer ? 'bg-cyan-950/80 border-cyan-500/60 ring-1 ring-cyan-500/30' : 'bg-slate-900/80 border-slate-800'}`}
-                    >
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <span className={`text-base font-black shrink-0 ${index === 0 ? 'text-yellow-400 scale-110' : index === 1 ? 'text-slate-300' : index === 2 ? 'text-amber-600' : 'text-slate-500'}`}>
-                          {badge}
-                        </span>
-                        
+              {/* Tab 1: Leaderboard Rankings */}
+              {leaderboardTab === 'rankings' && (
+                <div className="flex-1 my-1 overflow-y-auto space-y-2 pr-1 custom-scroll">
+                  {leaderboard.map((entry, index) => {
+                    const badge = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `#${index + 1}`;
+                    const isCurrentPlayer = entry.playerName === gameState.playerName;
+                    const subColor = COLOR_OPTIONS[entry.subColorIndex || 0] || COLOR_OPTIONS[0];
+
+                    return (
+                      <div 
+                        key={entry.id || index}
+                        className={`p-2.5 rounded-xl border flex items-center justify-between gap-2 shadow-sm transition ${isCurrentPlayer ? 'bg-cyan-950/80 border-cyan-500/60 ring-1 ring-cyan-500/30' : 'bg-slate-900/80 border-slate-800'}`}
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <span className={`text-base font-black shrink-0 ${index === 0 ? 'text-yellow-400 scale-110' : index === 1 ? 'text-slate-300' : index === 2 ? 'text-amber-600' : 'text-slate-500'}`}>
+                            {badge}
+                          </span>
+                          
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span 
+                                className="w-2.5 h-2.5 rounded-full inline-block shrink-0" 
+                                style={{ backgroundColor: subColor.primary }}
+                              ></span>
+                              <span className="font-bold text-xs text-white truncate">
+                                {entry.playerName}
+                              </span>
+                            </div>
+                            <div className="text-[10px] text-slate-400 flex items-center gap-2 mt-0.5">
+                              <span>🪙 {entry.coinsGained}</span>
+                              <span>•</span>
+                              <span>{entry.date}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="text-right shrink-0">
+                          <div className="text-sm font-extrabold text-cyan-400">
+                            {entry.depth} ม.
+                          </div>
+                          <div className="text-[9px] text-slate-500">
+                            ระดับก้นทะเล
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Tab 2: User History Logs */}
+              {leaderboardTab === 'history' && (
+                <div className="flex-1 my-1 overflow-y-auto space-y-2 pr-1 custom-scroll">
+                  {historyLogs.length === 0 ? (
+                    <div className="text-center py-10 text-slate-500 text-xs font-light">
+                      ยังไม่มีบันทึกการดิ่ง เล่นเกมเพื่อสะสมประวัติการเล่นของคุณที่นี่!
+                    </div>
+                  ) : (
+                    historyLogs.map((log) => (
+                      <div 
+                        key={log.id}
+                        className="p-2.5 bg-slate-900/80 border border-slate-800 rounded-xl flex items-center justify-between gap-2"
+                      >
                         <div className="min-w-0">
                           <div className="flex items-center gap-1.5">
-                            <span 
-                              className="w-2.5 h-2.5 rounded-full inline-block shrink-0" 
-                              style={{ backgroundColor: subColor.primary }}
-                            ></span>
-                            <span className="font-bold text-xs text-white truncate">
-                              {entry.playerName}
+                            <span className="text-xs font-bold text-cyan-300">{log.playerName}</span>
+                            <span className="text-[9px] px-1.5 py-0.2 bg-slate-800 text-slate-400 rounded-full border border-slate-700">
+                              {log.reason}
                             </span>
                           </div>
-                          <div className="text-[10px] text-slate-400 flex items-center gap-2 mt-0.5">
-                            <span>🪙 {entry.coinsGained}</span>
+                          <div className="text-[10px] text-slate-400 mt-1 flex items-center gap-2">
+                            <span>📅 {log.date} {log.time}</span>
                             <span>•</span>
-                            <span>{entry.date}</span>
+                            <span className="text-yellow-400">🪙 +{log.coinsGained}</span>
+                          </div>
+                        </div>
+
+                        <div className="text-right shrink-0">
+                          <div className="text-xs font-black text-emerald-400">
+                            {log.depth} ม.
+                          </div>
+                          <div className="text-[8px] text-slate-500">
+                            ระยะความลึก
                           </div>
                         </div>
                       </div>
-
-                      <div className="text-right shrink-0">
-                        <div className="text-sm font-extrabold text-cyan-400">
-                          {entry.depth} ม.
-                        </div>
-                        <div className="text-[9px] text-slate-500">
-                          ระดับก้นทะเล
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+                    ))
+                  )}
+                </div>
+              )}
 
               <button 
                 onClick={() => setShowLeaderboard(false)}
-                className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-xl text-xs border border-slate-700 cursor-pointer transition"
+                className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-xl text-xs border border-slate-700 cursor-pointer transition mt-2"
               >
-                ปิดตารางอันดับ
+                ปิดหน้าต่าง
               </button>
             </div>
           )}
