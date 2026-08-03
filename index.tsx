@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
+import { db, collection, addDoc, onSnapshot, query, orderBy, limit } from './firebase';
 import { 
   Shield, 
   Wind, 
@@ -335,6 +336,57 @@ function App() {
   useEffect(() => {
     localStorage.setItem('deep_sea_history_v1', JSON.stringify(historyLogs));
   }, [historyLogs]);
+
+  // Real-time Firestore Sync for Online Global Leaderboard
+  useEffect(() => {
+    try {
+      const q = query(collection(db, 'leaderboard'), orderBy('depth', 'desc'), limit(20));
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        if (!snapshot.empty) {
+          const remoteList: LeaderboardEntry[] = snapshot.docs.map(doc => ({
+            id: doc.id,
+            playerName: doc.data().playerName || 'กัปตันเรือ',
+            depth: Number(doc.data().depth) || 0,
+            coinsGained: Number(doc.data().coinsGained) || 0,
+            date: doc.data().date || '',
+            subColorIndex: doc.data().subColorIndex ?? 0
+          }));
+          setLeaderboard(remoteList);
+        }
+      }, (err) => {
+        console.warn("Firestore leaderboard snapshot warning:", err);
+      });
+      return () => unsubscribe();
+    } catch (e) {
+      console.warn("Firestore leaderboard setup exception:", e);
+    }
+  }, []);
+
+  // Real-time Firestore Sync for Online Dive History Logs
+  useEffect(() => {
+    try {
+      const q = query(collection(db, 'history'), orderBy('createdAt', 'desc'), limit(30));
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        if (!snapshot.empty) {
+          const remoteLogs: HistoryEntry[] = snapshot.docs.map(doc => ({
+            id: doc.id,
+            playerName: doc.data().playerName || 'กัปตันเรือ',
+            depth: Number(doc.data().depth) || 0,
+            coinsGained: Number(doc.data().coinsGained) || 0,
+            reason: doc.data().reason || 'อวสานการดำน้ำ',
+            date: doc.data().date || '',
+            time: doc.data().time || ''
+          }));
+          setHistoryLogs(remoteLogs);
+        }
+      }, (err) => {
+        console.warn("Firestore history snapshot warning:", err);
+      });
+      return () => unsubscribe();
+    } catch (e) {
+      console.warn("Firestore history setup exception:", e);
+    }
+  }, []);
 
   // Soundtrack control
   const [soundOn, setSoundOn] = useState(true);
@@ -1295,6 +1347,30 @@ function App() {
         };
 
         setHistoryLogs(prev => [historyItem, ...prev].slice(0, 25));
+
+        // Save to Firebase Cloud Firestore for Online Global Leaderboard & History
+        try {
+          addDoc(collection(db, 'leaderboard'), {
+            playerName: stateRef.current.playerName || 'กัปตันสมอ',
+            depth: totalMeters,
+            coinsGained: salvageGold,
+            date: todayStr,
+            subColorIndex: stateRef.current.subColorIndex ?? 0,
+            createdAt: new Date().toISOString()
+          });
+
+          addDoc(collection(db, 'history'), {
+            playerName: stateRef.current.playerName || 'กัปตันสมอ',
+            depth: totalMeters,
+            coinsGained: salvageGold,
+            reason: reason === 'oxygen' ? 'ออกซิเจนหมด' : 'เรือชนสิ่งกีดขวาง',
+            date: todayStr,
+            time: timeStr,
+            createdAt: new Date().toISOString()
+          });
+        } catch (err) {
+          console.warn("Firebase record save warning:", err);
+        }
       }
 
       setScreen('gameover');
@@ -1670,27 +1746,30 @@ function App() {
   const applyAbyssalDarknessShadow = (ctx: CanvasRenderingContext2D, width: number, height: number, depth: number, subX: number, subY: number, range: number, coneWidth: number) => {
     if (depth < 2500) return;
 
-    const maxDarkness = depth >= 4500 ? 0.96 : 0.72 + ((depth - 2500) / 2000) * 0.24;
+    const maxDarkness = depth >= 4500 ? 0.95 : 0.65 + ((depth - 2500) / 2000) * 0.3;
 
     ctx.save();
-    ctx.fillStyle = `rgba(3, 7, 18, ${maxDarkness})`;
+    // Fill dark overlay
+    ctx.fillStyle = `rgba(2, 6, 23, ${maxDarkness})`;
+    ctx.fillRect(0, 0, width, height);
+
+    // Punch out illuminated flashlight cone and submarine aura
+    ctx.globalCompositeOperation = 'destination-out';
+
+    // Flashlight cone
     ctx.beginPath();
-    
-    // Mask outline
-    ctx.rect(0, 0, width, height);
-    
-    // Draw hollow path cutout for searchlight
-    ctx.moveTo(subX, subY + 10);
+    ctx.moveTo(subX, subY + 12);
     ctx.lineTo(subX - coneWidth, subY + range);
     ctx.lineTo(subX + coneWidth, subY + range);
     ctx.closePath();
+    ctx.fillStyle = 'rgba(0, 0, 0, 1.0)';
+    ctx.fill();
 
-    // Round clear spot around immediate submarine chassis
-    ctx.moveTo(subX - 30, subY);
-    ctx.arc(subX, subY, 35, Math.PI, -Math.PI, true);
-    ctx.closePath();
-    
-    ctx.fill('evenodd');
+    // Submarine radius aura
+    ctx.beginPath();
+    ctx.arc(subX, subY, 40, 0, Math.PI * 2);
+    ctx.fill();
+
     ctx.restore();
   };
 
@@ -2618,8 +2697,14 @@ function App() {
 
               {/* Player Name Tag in Modal */}
               <div className="bg-slate-900/90 px-3 py-1.5 rounded-lg border border-slate-800 flex items-center justify-between text-xs my-2">
-                <span className="text-slate-400 text-[10px]">กัปตันของคุณ:</span>
-                <span className="font-extrabold text-cyan-300">{gameState.playerName}</span>
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                  <span className="text-[10px] text-emerald-400 font-medium">Cloud Online Sync</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-slate-400 text-[10px]">กัปตันของคุณ:</span>
+                  <span className="font-extrabold text-cyan-300">{gameState.playerName}</span>
+                </div>
               </div>
 
               {/* Tab 1: Leaderboard Rankings */}
