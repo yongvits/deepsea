@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
-import { db, collection, addDoc, onSnapshot, query, orderBy, limit } from './firebase';
 import { 
   Shield, 
   Wind, 
@@ -336,57 +335,6 @@ function App() {
   useEffect(() => {
     localStorage.setItem('deep_sea_history_v1', JSON.stringify(historyLogs));
   }, [historyLogs]);
-
-  // Real-time Firestore Sync for Online Global Leaderboard
-  useEffect(() => {
-    try {
-      const q = query(collection(db, 'leaderboard'), orderBy('depth', 'desc'), limit(20));
-      const unsubscribe = onSnapshot(q, (snapshot) => {
-        if (!snapshot.empty) {
-          const remoteList: LeaderboardEntry[] = snapshot.docs.map(doc => ({
-            id: doc.id,
-            playerName: doc.data().playerName || 'กัปตันเรือ',
-            depth: Number(doc.data().depth) || 0,
-            coinsGained: Number(doc.data().coinsGained) || 0,
-            date: doc.data().date || '',
-            subColorIndex: doc.data().subColorIndex ?? 0
-          }));
-          setLeaderboard(remoteList);
-        }
-      }, (err) => {
-        console.warn("Firestore leaderboard snapshot warning:", err);
-      });
-      return () => unsubscribe();
-    } catch (e) {
-      console.warn("Firestore leaderboard setup exception:", e);
-    }
-  }, []);
-
-  // Real-time Firestore Sync for Online Dive History Logs
-  useEffect(() => {
-    try {
-      const q = query(collection(db, 'history'), orderBy('createdAt', 'desc'), limit(30));
-      const unsubscribe = onSnapshot(q, (snapshot) => {
-        if (!snapshot.empty) {
-          const remoteLogs: HistoryEntry[] = snapshot.docs.map(doc => ({
-            id: doc.id,
-            playerName: doc.data().playerName || 'กัปตันเรือ',
-            depth: Number(doc.data().depth) || 0,
-            coinsGained: Number(doc.data().coinsGained) || 0,
-            reason: doc.data().reason || 'อวสานการดำน้ำ',
-            date: doc.data().date || '',
-            time: doc.data().time || ''
-          }));
-          setHistoryLogs(remoteLogs);
-        }
-      }, (err) => {
-        console.warn("Firestore history snapshot warning:", err);
-      });
-      return () => unsubscribe();
-    } catch (e) {
-      console.warn("Firestore history setup exception:", e);
-    }
-  }, []);
 
   // Soundtrack control
   const [soundOn, setSoundOn] = useState(true);
@@ -1347,30 +1295,6 @@ function App() {
         };
 
         setHistoryLogs(prev => [historyItem, ...prev].slice(0, 25));
-
-        // Save to Firebase Cloud Firestore for Online Global Leaderboard & History
-        try {
-          addDoc(collection(db, 'leaderboard'), {
-            playerName: stateRef.current.playerName || 'กัปตันสมอ',
-            depth: totalMeters,
-            coinsGained: salvageGold,
-            date: todayStr,
-            subColorIndex: stateRef.current.subColorIndex ?? 0,
-            createdAt: new Date().toISOString()
-          });
-
-          addDoc(collection(db, 'history'), {
-            playerName: stateRef.current.playerName || 'กัปตันสมอ',
-            depth: totalMeters,
-            coinsGained: salvageGold,
-            reason: reason === 'oxygen' ? 'ออกซิเจนหมด' : 'เรือชนสิ่งกีดขวาง',
-            date: todayStr,
-            time: timeStr,
-            createdAt: new Date().toISOString()
-          });
-        } catch (err) {
-          console.warn("Firebase record save warning:", err);
-        }
       }
 
       setScreen('gameover');
@@ -2698,8 +2622,8 @@ function App() {
               {/* Player Name Tag in Modal */}
               <div className="bg-slate-900/90 px-3 py-1.5 rounded-lg border border-slate-800 flex items-center justify-between text-xs my-2">
                 <div className="flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                  <span className="text-[10px] text-emerald-400 font-medium">Cloud Online Sync</span>
+                  <span className="w-2 h-2 rounded-full bg-cyan-400"></span>
+                  <span className="text-[10px] text-cyan-300 font-medium">บันทึกอัตโนมัติในเครื่อง</span>
                 </div>
                 <div className="flex items-center gap-1">
                   <span className="text-slate-400 text-[10px]">กัปตันของคุณ:</span>
