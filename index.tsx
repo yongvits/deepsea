@@ -64,7 +64,17 @@ interface Upgrades {
   light: number;      
 }
 
+interface LeaderboardEntry {
+  id: string;
+  playerName: string;
+  depth: number;
+  coinsGained: number;
+  date: string;
+  subColorIndex: number;
+}
+
 interface GameState {
+  playerName: string;
   coins: number;
   highscore: number;
   upgrades: Upgrades;
@@ -72,31 +82,38 @@ interface GameState {
   subColorIndex: number;
 }
 
+const DEFAULT_LEADERBOARD: LeaderboardEntry[] = [
+  { id: '1', playerName: 'กัปตันมารีน', depth: 3250, coinsGained: 450, date: '2026-08-01', subColorIndex: 1 },
+  { id: '2', playerName: 'นักดิ่งนีออน', depth: 2100, coinsGained: 280, date: '2026-08-01', subColorIndex: 0 },
+  { id: '3', playerName: 'ผู้พิชิตเหวลึก', depth: 1450, coinsGained: 190, date: '2026-08-02', subColorIndex: 3 },
+  { id: '4', playerName: 'กัปตันสายหมอก', depth: 980, coinsGained: 120, date: '2026-08-02', subColorIndex: 2 }
+];
+
 const UPGRADES_CONF = {
   hull: {
     maxLevel: 5,
-    costMultiplier: 120,
-    values: [100, 130, 170, 220, 300]
+    costMultiplier: 100,
+    values: [120, 160, 220, 300, 400]
   },
   engine: {
     maxLevel: 5,
-    costMultiplier: 100,
-    values: [0.15, 0.18, 0.22, 0.26, 0.32] 
+    costMultiplier: 90,
+    values: [0.18, 0.22, 0.26, 0.31, 0.38] 
   },
   oxygen: {
     maxLevel: 5,
-    costMultiplier: 110,
-    values: [0.12, 0.10, 0.08, 0.06, 0.045] 
+    costMultiplier: 100,
+    values: [0.045, 0.035, 0.025, 0.018, 0.012] 
   },
   light: {
     maxLevel: 5,
-    costMultiplier: 90,
+    costMultiplier: 80,
     values: [
-      { length: 180, width: 45 },
       { length: 220, width: 55 },
       { length: 260, width: 65 },
       { length: 300, width: 75 },
-      { length: 350, width: 90 }
+      { length: 350, width: 90 },
+      { length: 420, width: 110 }
     ]
   }
 };
@@ -107,6 +124,9 @@ const UPGRADES_CONF = {
 class RetroAudioController {
   public ctx: AudioContext | null = null;
   public enabled: boolean = true;
+  private activeCount: number = 0;
+  private lastSonarTime: number = 0;
+  private lastSoundTimes: Record<string, number> = {};
 
   init() {
     if (this.ctx) return;
@@ -121,79 +141,104 @@ class RetroAudioController {
   resumeContext() {
     this.init();
     if (this.ctx && this.ctx.state === 'suspended') {
-      this.ctx.resume();
+      this.ctx.resume().catch(() => {});
     }
   }
 
-  playTone(freqStart: number, freqEnd: number, duration: number, type: OscillatorType = 'sine', volume: number = 0.1) {
-    if (!this.enabled) return;
-    this.resumeContext();
-    if (!this.ctx) return;
+  stopAll() {
+    this.activeCount = 0;
+  }
 
-    // Guard against NaN values to prevent loud buzzes and audio errors
+  playTone(freqStart: number, freqEnd: number, duration: number, type: OscillatorType = 'sine', volume: number = 0.1, soundKey?: string) {
+    if (!this.enabled) return;
+
+    const now = performance.now();
+    if (soundKey) {
+      if (this.lastSoundTimes[soundKey] && now - this.lastSoundTimes[soundKey] < 80) {
+        return;
+      }
+      this.lastSoundTimes[soundKey] = now;
+    }
+
+    this.resumeContext();
+    if (!this.ctx || this.ctx.state === 'closed') return;
+
+    if (this.activeCount >= 5) return; // Cap simultaneous synth sounds to prevent audio thread crashes
+
     const safeStart = isNaN(freqStart) ? 440 : Math.max(20, Math.min(freqStart, 20000));
     const safeEnd = isNaN(freqEnd) ? 440 : Math.max(20, Math.min(freqEnd, 20000));
-    const safeDur = isNaN(duration) ? 0.1 : Math.max(0.01, Math.min(duration, 2.0));
-    const safeVol = isNaN(volume) ? 0.1 : Math.max(0.0, Math.min(volume, 1.0));
+    const safeDur = isNaN(duration) ? 0.1 : Math.max(0.01, Math.min(duration, 1.2));
+    const safeVol = isNaN(volume) ? 0.08 : Math.max(0.0, Math.min(volume, 0.4));
 
     try {
-      const now = this.ctx.currentTime;
+      const audioNow = this.ctx.currentTime;
       const osc = this.ctx.createOscillator();
       const gainNode = this.ctx.createGain();
 
       osc.type = type;
-      osc.frequency.setValueAtTime(safeStart, now);
+      osc.frequency.setValueAtTime(safeStart, audioNow);
       if (safeEnd !== safeStart) {
-        osc.frequency.exponentialRampToValueAtTime(safeEnd, now + safeDur);
+        osc.frequency.exponentialRampToValueAtTime(safeEnd, audioNow + safeDur);
       }
 
-      // Smooth envelope to prevent audio popping
-      gainNode.gain.setValueAtTime(0, now);
-      gainNode.gain.linearRampToValueAtTime(safeVol, now + 0.02);
-      gainNode.gain.exponentialRampToValueAtTime(0.001, now + safeDur);
+      gainNode.gain.setValueAtTime(0, audioNow);
+      gainNode.gain.linearRampToValueAtTime(safeVol, audioNow + 0.01);
+      gainNode.gain.exponentialRampToValueAtTime(0.001, audioNow + safeDur);
 
       osc.connect(gainNode);
       gainNode.connect(this.ctx.destination);
 
-      osc.start(now);
-      osc.stop(now + safeDur);
-
-      // Robust automatic cleanup
-      setTimeout(() => {
+      this.activeCount++;
+      let cleaned = false;
+      const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
+        this.activeCount = Math.max(0, this.activeCount - 1);
         try {
           gainNode.disconnect();
           osc.disconnect();
         } catch (e) {}
-      }, safeDur * 1000 + 100);
+      };
+
+      osc.onended = cleanup;
+      osc.start(audioNow);
+      osc.stop(audioNow + safeDur);
+
+      setTimeout(cleanup, safeDur * 1000 + 50);
     } catch (err) {
       console.warn("Audio playback failover:", err);
     }
   }
 
   playCoin() {
-    this.playTone(587.33, 880, 0.18, 'sine', 0.08);
+    this.playTone(587.33, 880, 0.18, 'sine', 0.08, 'coin');
   }
 
   playPowerup() {
-    this.playTone(330, 990, 0.35, 'triangle', 0.1);
+    this.playTone(330, 990, 0.35, 'triangle', 0.1, 'powerup');
   }
 
   playHit() {
-    this.playTone(180, 60, 0.22, 'sawtooth', 0.15);
+    this.playTone(180, 60, 0.22, 'sawtooth', 0.15, 'hit');
   }
 
   playExplosion() {
-    this.playTone(110, 5, 0.45, 'sawtooth', 0.2);
+    this.playTone(110, 5, 0.45, 'sawtooth', 0.2, 'explosion');
   }
 
   playGameOver() {
-    this.playTone(220, 55, 0.8, 'sawtooth', 0.15);
+    this.playTone(220, 55, 0.8, 'sawtooth', 0.15, 'gameover');
   }
 
   playSonarWarning(isExtremelyUrgent = false) {
+    const now = performance.now();
+    const cooldown = isExtremelyUrgent ? 250 : 500;
+    if (now - this.lastSonarTime < cooldown) return;
+    this.lastSonarTime = now;
+
     const pitch = isExtremelyUrgent ? 1100 : 880;
     const len = isExtremelyUrgent ? 0.08 : 0.12;
-    this.playTone(pitch, pitch, len, 'sine', 0.15);
+    this.playTone(pitch, pitch, len, 'sine', 0.12, 'sonar');
   }
 }
 
@@ -207,12 +252,13 @@ function App() {
   
   // Highscore, Coins, Upgrades State
   const [gameState, setGameState] = useState<GameState>(() => {
-    const saved = localStorage.getItem('deep_sea_descent_save_v6');
+    const saved = localStorage.getItem('deep_sea_descent_save_v7');
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
         return {
-          coins: parsed.coins || 0,
+          playerName: parsed.playerName || 'กัปตันสมอ',
+          coins: parsed.coins !== undefined ? parsed.coins : 200,
           highscore: parsed.highscore || 0,
           upgrades: {
             hull: parsed.upgrades?.hull || 1,
@@ -228,13 +274,32 @@ function App() {
       }
     }
     return {
-      coins: 50,
+      playerName: 'กัปตันสมอ',
+      coins: 200,
       highscore: 0,
       upgrades: { hull: 1, engine: 1, oxygen: 1, light: 1 },
       controlMode: 'touch',
       subColorIndex: 0
     };
   });
+
+  // Global Leaderboard State
+  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>(() => {
+    const saved = localStorage.getItem('deep_sea_leaderboard_v1');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      } catch (e) {}
+    }
+    return DEFAULT_LEADERBOARD;
+  });
+
+  const [showLeaderboard, setShowLeaderboard] = useState<boolean>(false);
+
+  useEffect(() => {
+    localStorage.setItem('deep_sea_leaderboard_v1', JSON.stringify(leaderboard));
+  }, [leaderboard]);
 
   // Soundtrack control
   const [soundOn, setSoundOn] = useState(true);
@@ -658,6 +723,8 @@ function App() {
       }
     }, { passive: true });
 
+    let lastUiTick = 0;
+
     // Inner tick update
     const loop = () => {
       if (!gameActive.current || screenRef.current !== 'game') {
@@ -671,7 +738,6 @@ function App() {
 
       // 1. Depth drift
       depthLocal += (0.6 + (activeUpgrades.engine * 0.1));
-      setCurrentDepth(Math.floor(depthLocal));
 
       // Zone tracker trigger
       for (let i = 0; i < ZONES.length; i++) {
@@ -695,13 +761,10 @@ function App() {
       // 2. Oxygen depletion
       const oxygenDelta = UPGRADES_CONF.oxygen.values[activeUpgrades.oxygen - 1];
       boat.oxygen = Math.max(0, boat.oxygen - oxygenDelta);
-      setOxygenLevel(Math.floor(boat.oxygen));
 
-      // Alarm/Low oxygen effect
+      // Alarm/Low oxygen effect (rate limited by RetroAudioController)
       if (boat.oxygen < 25) {
-        if (Math.floor(Date.now() / 400) % 2 === 0) {
-          audio.playSonarWarning(boat.oxygen < 10);
-        }
+        audio.playSonarWarning(boat.oxygen < 10);
       }
 
       // Handle raw oxygen exhaustion
@@ -713,9 +776,17 @@ function App() {
       // Shield active depletion
       if (boat.shieldTime > 0) {
         boat.shieldTime--;
-        setShieldActive(true);
-      } else {
-        setShieldActive(false);
+      }
+
+      // Throttled React state updates to eliminate DOM thrashing and render freeze (60FPS -> ~10FPS React sync)
+      const nowMs = performance.now();
+      if (nowMs - lastUiTick >= 90) {
+        lastUiTick = nowMs;
+        setCurrentDepth(Math.floor(depthLocal));
+        setOxygenLevel(Math.floor(boat.oxygen));
+        setHullHp(Math.ceil(boat.hp));
+        setShieldActive(boat.shieldTime > 0);
+        setGoldAcquiredThisDive(goldLocal);
       }
 
       // Keyboard Controls fallback
@@ -752,9 +823,6 @@ function App() {
       boat.x += (boat.targetX - boat.x) * subSpeed;
       if (boat.x < 30) boat.x = 30;
       if (boat.x > canvas.width - 30) boat.x = canvas.width - 30;
-
-      // HP updating triggers
-      setHullHp(Math.ceil(boat.hp));
 
       // Main core crash threshold
       if (boat.hp <= 0) {
@@ -803,6 +871,9 @@ function App() {
         if (p.alpha <= 0 || p.y < -35) {
           particles.splice(idx, 1);
         }
+      }
+      if (particles.length > 70) {
+        particles.splice(0, particles.length - 70);
       }
 
       // Creatures Spawning
@@ -978,18 +1049,16 @@ function App() {
       items.forEach((it) => {
         ctx.save();
         ctx.translate(it.x, it.y);
-        ctx.shadowBlur = 10;
-        ctx.shadowColor = it.shadowColor;
 
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
-        ctx.lineWidth = 1;
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
+        ctx.strokeStyle = it.color || 'rgba(255, 255, 255, 0.5)';
+        ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.arc(0, 0, 18 + it.pulseFactor / 2, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
 
-        ctx.font = `28px Arial`;
+        ctx.font = `26px Arial`;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.fillText(it.emoji, 0, 0);
@@ -1000,10 +1069,6 @@ function App() {
       creatures.forEach((cre) => {
         ctx.save();
         ctx.translate(cre.x, cre.y);
-        if (cre.glow) {
-          ctx.shadowBlur = 15;
-          ctx.shadowColor = cre.shadowColor;
-        }
         if (cre.speedX < 0) {
           ctx.scale(-1, 1); // Flip horizontally depending on drift side
         }
@@ -1049,8 +1114,6 @@ function App() {
       ctx.fillRect(-26, -4, 4, 8);
 
       // Main steel Capsule
-      ctx.shadowBlur = 8;
-      ctx.shadowColor = subColor.glow;
       ctx.fillStyle = subColor.primary;
       ctx.beginPath();
       ctx.ellipse(0, 0, 24, 15, 0, 0, Math.PI * 2);
@@ -1073,7 +1136,6 @@ function App() {
       ctx.fill();
 
       // Circular pilot Windows
-      ctx.shadowBlur = 0;
       ctx.fillStyle = "#1e293b";
       ctx.beginPath();
       ctx.arc(-4, -1, 7, 0, Math.PI * 2);
@@ -1103,14 +1165,12 @@ function App() {
       // Cyan Bubble Force Field
       if (boat.shieldTime > 0) {
         const shieldPulse = 1 + Math.sin(Date.now() * 0.015) * 0.06;
-        ctx.strokeStyle = "rgba(34, 211, 238, 0.8)";
-        ctx.lineWidth = 3;
-        ctx.shadowBlur = 15;
-        ctx.shadowColor = 'rgba(34, 211, 238, 0.8)';
+        ctx.strokeStyle = "rgba(34, 211, 238, 0.9)";
+        ctx.lineWidth = 3.5;
         ctx.beginPath();
         ctx.arc(0, 0, 34 * shieldPulse, 0, Math.PI * 2);
         ctx.stroke();
-        ctx.fillStyle = "rgba(34, 211, 238, 0.06)";
+        ctx.fillStyle = "rgba(34, 211, 238, 0.12)";
         ctx.fill();
       }
 
@@ -1152,7 +1212,10 @@ function App() {
     // Wreckage triggered
     const stopWithWreckage = (reason: 'collision' | 'oxygen', totalMeters: number, salvageGold: number) => {
       gameActive.current = false;
-      cancelAnimationFrame(animationFrameId.current);
+      if (animationFrameId.current) {
+        cancelAnimationFrame(animationFrameId.current);
+      }
+      audio.stopAll();
       audio.playGameOver();
 
       setDeathReason(reason);
@@ -1165,6 +1228,24 @@ function App() {
           highscore: wasNewHigh ? totalMeters : prev.highscore
         };
       });
+
+      if (totalMeters > 0) {
+        const todayStr = new Date().toLocaleDateString('th-TH', { day: 'numeric', month: 'short' });
+        const newEntry: LeaderboardEntry = {
+          id: Date.now().toString(),
+          playerName: stateRef.current.playerName || 'กัปตันสมอ',
+          depth: totalMeters,
+          coinsGained: salvageGold,
+          date: todayStr,
+          subColorIndex: stateRef.current.subColorIndex
+        };
+
+        setLeaderboard(prev => {
+          const combined = [...prev, newEntry];
+          combined.sort((a, b) => b.depth - a.depth);
+          return combined.slice(0, 10);
+        });
+      }
 
       setScreen('gameover');
     };
@@ -1570,27 +1651,27 @@ function App() {
 
     if (spawnDepth < 1000) {
       const rand = Math.random();
-      if (rand < 0.35) { species = 'clownfish'; damage = 14; }
-      else if (rand < 0.70) { species = 'bluetang'; damage = 16; }
-      else if (rand < 0.85) { species = 'goldfish'; damage = 18; }
-      else { species = 'turtle'; damage = 22; }
+      if (rand < 0.35) { species = 'clownfish'; damage = 8; }
+      else if (rand < 0.70) { species = 'bluetang'; damage = 10; }
+      else if (rand < 0.85) { species = 'goldfish'; damage = 12; }
+      else { species = 'turtle'; damage = 14; }
     } else if (spawnDepth < 2500) {
       const rand = Math.random();
-      if (rand < 0.45) { species = 'lanternfish'; damage = 24; }
-      else if (rand < 0.75) { species = 'jellyfish'; damage = 22; }
-      else if (rand < 0.90) { species = 'ribboneel'; damage = 20; }
-      else { species = 'oarfish'; damage = 35; }
+      if (rand < 0.45) { species = 'lanternfish'; damage = 15; }
+      else if (rand < 0.75) { species = 'jellyfish'; damage = 14; }
+      else if (rand < 0.90) { species = 'ribboneel'; damage = 12; }
+      else { species = 'oarfish'; damage = 22; }
     } else if (spawnDepth < 5000) {
       const rand = Math.random();
-      if (rand < 0.45) { species = 'anglerfish'; damage = 40; }
-      else if (rand < 0.75) { species = 'viperfish'; damage = 32; }
-      else if (rand < 0.90) { species = 'isopod'; damage = 22; }
-      else { species = 'mine'; damage = 45; }
+      if (rand < 0.45) { species = 'anglerfish'; damage = 25; }
+      else if (rand < 0.75) { species = 'viperfish'; damage = 20; }
+      else if (rand < 0.90) { species = 'isopod'; damage = 15; }
+      else { species = 'mine'; damage = 30; }
     } else {
       const rand = Math.random();
-      if (rand < 0.35) { species = 'blobfish'; damage = 18; }
-      else if (rand < 0.70) { species = 'gulpereel'; damage = 38; }
-      else { species = 'dumbo'; damage = 24; }
+      if (rand < 0.35) { species = 'blobfish'; damage = 12; }
+      else if (rand < 0.70) { species = 'gulpereel'; damage = 24; }
+      else { species = 'dumbo'; damage = 15; }
     }
 
     const sideLeft = Math.random() > 0.5;
@@ -1976,10 +2057,10 @@ function App() {
 
   const generateProceduralItem = (screenWidth: number, screenHeight: number) => {
     const choices = [
-      { emoji: "🪙", type: "coin", val: 10, shadowColor: "rgba(234, 179, 8, 0.75)", color: "#fbbf24" },
-      { emoji: "🫧", type: "oxygen", val: 30, shadowColor: "rgba(16, 185, 129, 0.75)", color: "#34d399" },
-      { emoji: "🔧", type: "repair", val: 25, shadowColor: "rgba(239, 68, 68, 0.75)", color: "#f87171" },
-      { emoji: "🛡️", type: "shield", val: 300, shadowColor: "rgba(6, 182, 212, 0.75)", color: "#22d3ee" }
+      { emoji: "🪙", type: "coin", val: 20, shadowColor: "rgba(234, 179, 8, 0.75)", color: "#fbbf24" },
+      { emoji: "🫧", type: "oxygen", val: 45, shadowColor: "rgba(16, 185, 129, 0.75)", color: "#34d399" },
+      { emoji: "🔧", type: "repair", val: 35, shadowColor: "rgba(239, 68, 68, 0.75)", color: "#f87171" },
+      { emoji: "🛡️", type: "shield", val: 450, shadowColor: "rgba(6, 182, 212, 0.75)", color: "#22d3ee" }
     ];
     const candidate = choices[Math.floor(Math.random() * choices.length)];
     return {
@@ -2102,6 +2183,25 @@ function App() {
                   ผจญภัยสู่ก้นทะเลลึกด้วยคุณสมบัติควบคุมหลากหลาย! รองรับการหมุนเอียงด้วยใบหน้าผ่านกล้องหน้า AI, มัลติเซนเซอร์จับทิศทาง หรือปุ่มสัมผัสตอบสนองสูง
                 </p>
 
+                {/* ===================== PLAYER NAME INPUT ===================== */}
+                <div className="bg-slate-900/95 p-2.5 rounded-xl border border-slate-800 max-w-xs mx-auto space-y-1.5 shadow-xl text-left">
+                  <label className="text-[11px] font-bold text-slate-300 flex justify-between items-center">
+                    <span>👤 ชื่อกัปตันเรือ:</span>
+                    <span className="text-[10px] text-cyan-400 font-normal">จดจำคะแนนของคุณ</span>
+                  </label>
+                  <input 
+                    type="text"
+                    maxLength={16}
+                    value={gameState.playerName}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setGameState(prev => ({ ...prev, playerName: val }));
+                    }}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-cyan-300 font-bold focus:outline-none focus:border-cyan-400 transition"
+                    placeholder="ใส่ชื่อของคุณ..."
+                  />
+                </div>
+
                 {/* ===================== SUB HULL COLOR SELECTOR ===================== */}
                 <div className="bg-slate-900/95 p-3 rounded-xl border border-slate-800 max-w-xs mx-auto space-y-2.5 shadow-xl">
                   <div className="flex justify-between items-center px-1">
@@ -2149,8 +2249,16 @@ function App() {
                   </div>
                 </div>
 
-                <div className="bg-cyan-950/40 p-1.5 rounded-lg border border-cyan-800/30 text-xs inline-block shadow">
-                  🏆 ความลึกสถิติสูงสุด: <span className="text-cyan-300 font-bold">{Math.floor(gameState.highscore)} ม.</span>
+                <div className="flex gap-2 justify-center max-w-xs mx-auto">
+                  <div className="bg-cyan-950/40 px-3 py-1.5 rounded-lg border border-cyan-800/30 text-xs inline-block shadow flex-1">
+                    🏆 สถิติไกลสุด: <span className="text-cyan-300 font-bold">{Math.floor(gameState.highscore)} ม.</span>
+                  </div>
+                  <button 
+                    onClick={() => { audio.playCoin(); setShowLeaderboard(true); }}
+                    className="bg-yellow-950/60 hover:bg-yellow-900/80 px-3 py-1.5 rounded-lg border border-yellow-600/40 text-xs font-bold text-yellow-400 shadow cursor-pointer transition flex items-center gap-1 shrink-0"
+                  >
+                    🏆 ลำดับความลึก
+                  </button>
                 </div>
               </div>
 
@@ -2388,6 +2496,15 @@ function App() {
                     🏆 บันทึกสถิติสูงสุดใหม่สำเร็จ!
                   </div>
                 )}
+
+                <div className="pt-1">
+                  <button 
+                    onClick={() => { audio.playCoin(); setShowLeaderboard(true); }}
+                    className="w-full py-2 bg-yellow-950/60 hover:bg-yellow-900/80 rounded-lg border border-yellow-600/40 text-xs font-bold text-yellow-400 shadow cursor-pointer transition flex items-center justify-center gap-1.5"
+                  >
+                    🏆 ดูลำดับความลึกที่เล่นได้ไกลที่สุด
+                  </button>
+                </div>
               </div>
 
               {/* Actions buttons */}
@@ -2413,6 +2530,77 @@ function App() {
                   </button>
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* ==================== LEADERBOARD MODAL ==================== */}
+          {showLeaderboard && (
+            <div className="absolute inset-0 bg-black/90 backdrop-blur-md flex flex-col justify-between p-5 z-55 transition-all duration-300">
+              <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+                <h2 className="text-base font-bold text-yellow-400 flex items-center gap-2">
+                  <span>🏆</span> ลำดับความลึกที่เล่นได้ไกลที่สุด
+                </h2>
+                <button 
+                  onClick={() => setShowLeaderboard(false)}
+                  className="text-slate-400 hover:text-white text-lg font-bold px-2 py-0.5 rounded cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="flex-1 my-3 overflow-y-auto space-y-2 pr-1 custom-scroll">
+                {leaderboard.map((entry, index) => {
+                  const badge = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `#${index + 1}`;
+                  const isCurrentPlayer = entry.playerName === gameState.playerName;
+                  const subColor = COLOR_OPTIONS[entry.subColorIndex || 0] || COLOR_OPTIONS[0];
+
+                  return (
+                    <div 
+                      key={entry.id || index}
+                      className={`p-3 rounded-xl border flex items-center justify-between gap-2 shadow-sm transition ${isCurrentPlayer ? 'bg-cyan-950/80 border-cyan-500/60 ring-1 ring-cyan-500/30' : 'bg-slate-900/80 border-slate-800'}`}
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <span className={`text-base font-black shrink-0 ${index === 0 ? 'text-yellow-400 scale-110' : index === 1 ? 'text-slate-300' : index === 2 ? 'text-amber-600' : 'text-slate-500'}`}>
+                          {badge}
+                        </span>
+                        
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span 
+                              className="w-2.5 h-2.5 rounded-full inline-block shrink-0" 
+                              style={{ backgroundColor: subColor.primary }}
+                            ></span>
+                            <span className="font-bold text-xs text-white truncate">
+                              {entry.playerName}
+                            </span>
+                          </div>
+                          <div className="text-[10px] text-slate-400 flex items-center gap-2 mt-0.5">
+                            <span>🪙 {entry.coinsGained}</span>
+                            <span>•</span>
+                            <span>{entry.date}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="text-right shrink-0">
+                        <div className="text-sm font-extrabold text-cyan-400">
+                          {entry.depth} ม.
+                        </div>
+                        <div className="text-[9px] text-slate-500">
+                          ระดับก้นทะเล
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <button 
+                onClick={() => setShowLeaderboard(false)}
+                className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-xl text-xs border border-slate-700 cursor-pointer transition"
+              >
+                ปิดตารางอันดับ
+              </button>
             </div>
           )}
 

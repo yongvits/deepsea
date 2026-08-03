@@ -1,23 +1,25 @@
-import tailwindcss from '@tailwindcss/vite';
-import react from '@vitejs/plugin-react';
 import path from 'path';
-import { defineConfig } from 'vite';
+import { defineConfig, loadEnv } from 'vite';
+import tailwindcss from '@tailwindcss/vite';
 
-export default defineConfig(() => {
-  return {
-    base: '/deepsea/', // <--- เพิ่มบรรทัดนี้เพื่อให้ GitHub Pages ชี้พาธไฟล์ถูกต้อง
-    plugins: [react(), tailwindcss()],
-    resolve: {
-      alias: {
-        '@': path.resolve(__dirname, '.'),
+
+export default defineConfig(({ mode }) => {
+    const env = loadEnv(mode, '.', '');
+    return {
+      base: '/deepsea/',
+      server: {
+        port: 3000,
+        host: '0.0.0.0',
       },
-    },
-    server: {
-      // HMR is disabled in AI Studio via DISABLE_HMR env var.
-      // Do not modify—file watching is disabled to prevent flickering during agent edits.
-      hmr: process.env.DISABLE_HMR !== 'true',
-      // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
-      watch: process.env.DISABLE_HMR === 'true' ? null : {},
-    },
-  };
+      plugins: [tailwindcss()],
+      define: {
+        'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
+        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY)
+      },
+      resolve: {
+        alias: {
+          '@': path.resolve(__dirname, '.'),
+        }
+      }
+    };
 });
